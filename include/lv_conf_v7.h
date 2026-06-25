@@ -82,7 +82,8 @@ typedef int16_t lv_coord_t;
 
 #ifndef LV_MEM_CUSTOM
   /* 1: use custom malloc/free, 0: use the built-in `lv_mem_alloc` and `lv_mem_free` */
-#define LV_MEM_CUSTOM      0
+  /* Use custom allocator so chart/object data goes to PSRAM (hasp_malloc routes to ps_malloc) */
+#define LV_MEM_CUSTOM      1
 #endif
 #if LV_MEM_CUSTOM == 0
 /* Size of the memory used by `lv_mem_alloc` in bytes (>= 2kB)*/
