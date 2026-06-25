@@ -910,7 +910,7 @@ typedef struct {
 #define LV_USE_CHECKBOX       1
 
 /*Chart (dependencies: -)*/
-#define LV_USE_CHART    0
+#define LV_USE_CHART    1
 #if LV_USE_CHART
 #  define LV_CHART_AXIS_TICK_LABEL_MAX_LEN    20
 #endif

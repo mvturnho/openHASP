@@ -184,10 +184,14 @@ int hasp_parse_json_attributes(lv_obj_t* obj, const JsonObject& doc)
     v.reserve(64);
 
     for(JsonPair keyValue : doc) {
-        // LOG_VERBOSE(TAG_HASP, F(D_BULLET "%s=%s"), keyValue.key().c_str(),
-        // keyValue.value().as<std::string>().c_str());
-        v = keyValue.value().as<std::string>();
-        hasp_process_obj_attribute(obj, keyValue.key().c_str(), keyValue.value().as<std::string>().c_str(), true);
+        JsonVariant jval = keyValue.value();
+        if(jval.is<JsonArray>() || jval.is<JsonObject>()) {
+            v.clear();
+            serializeJson(jval, v);
+        } else {
+            v = jval.as<std::string>();
+        }
+        hasp_process_obj_attribute(obj, keyValue.key().c_str(), v.c_str(), true);
         i++;
     }
 #else
@@ -195,9 +199,14 @@ int hasp_parse_json_attributes(lv_obj_t* obj, const JsonObject& doc)
     v.reserve(64);
 
     for(JsonPair keyValue : doc) {
-        // LOG_DEBUG(TAG_HASP, F(D_BULLET "%s=%s"), keyValue.key().c_str(), keyValue.value().as<String>().c_str());
-        v = keyValue.value().as<String>();
-        hasp_process_obj_attribute(obj, keyValue.key().c_str(), keyValue.value().as<String>().c_str(), true);
+        JsonVariant jval = keyValue.value();
+        if(jval.is<JsonArray>() || jval.is<JsonObject>()) {
+            v = "";
+            serializeJson(jval, v);
+        } else {
+            v = jval.as<String>();
+        }
+        hasp_process_obj_attribute(obj, keyValue.key().c_str(), v.c_str(), true);
         i++;
     }
 #endif
@@ -607,19 +616,14 @@ void hasp_new_object(const JsonObject& config, uint8_t& saved_page_id)
             case HASP_OBJ_CHART:
                 obj = lv_chart_create(parent_obj, NULL);
                 if(obj) {
+                    lv_chart_set_type(obj, LV_CHART_TYPE_LINE);
                     lv_chart_set_range(obj, 0, 100);
+                    lv_chart_set_point_count(obj, 10);
+                    lv_obj_set_style_local_size(obj, LV_CHART_PART_SERIES, LV_STATE_DEFAULT, 0);
+                    // Override Material theme: default to solid grid lines
+                    lv_obj_set_style_local_line_dash_width(obj, LV_CHART_PART_SERIES_BG, LV_STATE_DEFAULT, 0);
+                    lv_obj_set_style_local_line_dash_gap(obj, LV_CHART_PART_SERIES_BG, LV_STATE_DEFAULT, 0);
                     lv_obj_set_event_cb(obj, generic_event_handler);
-
-                    lv_chart_add_series(obj, LV_COLOR_RED);
-                    lv_chart_add_series(obj, LV_COLOR_GREEN);
-                    lv_chart_add_series(obj, LV_COLOR_BLUE);
-
-                    lv_chart_series_t* ser = my_chart_get_series(obj, 2);
-                    lv_chart_set_next(obj, ser, 10);
-                    lv_chart_set_next(obj, ser, 20);
-                    lv_chart_set_next(obj, ser, 30);
-                    lv_chart_set_next(obj, ser, 40);
-
                     obj->user_data.objid = LV_HASP_CHART;
                 }
                 break;

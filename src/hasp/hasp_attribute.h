@@ -495,6 +495,19 @@ _HASP_ATTRIBUTE(SCALE_END_LINE_WIDTH, scale_end_line_width, lv_style_int_t)
 #define ATTR_POINTS 8643
 #define ATTR_Y_INVERT 44252
 
+// Chart
+#define ATTR_DATA        34666
+#define ATTR_APPEND      63034
+#define ATTR_SERIES      38135
+#define ATTR_POINT_COUNT  2752
+#define ATTR_GRID_COLOR      53834
+#define ATTR_POINT_SIZE      21200
+#define ATTR_HDIV            63049
+#define ATTR_VDIV            24763
+#define ATTR_GRID_DASH_WIDTH 14994
+#define ATTR_GRID_DASH_GAP   37538
+#define ATTR_UPDATE_MODE     56889
+
 /* hasp user data */
 #define ATTR_ACTION 42102
 #define ATTR_TRANSITION 10933

@@ -1208,6 +1208,175 @@ static hasp_attribute_type_t special_attribute_direction(lv_obj_t* obj, uint16_t
     return HASP_ATTR_TYPE_INT;
 }
 
+#if LV_USE_CHART > 0
+static hasp_attribute_type_t hasp_process_chart_attribute(lv_obj_t* obj, uint16_t attr_hash, int32_t& val, bool update)
+{
+    lv_chart_ext_t* ext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
+
+    switch(attr_hash) {
+        case ATTR_TYPE:
+            if(update)
+                lv_chart_set_type(obj, (lv_chart_type_t)(val & 0x0F));
+            else
+                val = (int32_t)ext->type;
+            break;
+
+        case ATTR_POINT_COUNT:
+            if(update)
+                lv_chart_set_point_count(obj, (uint16_t)val);
+            else
+                val = (int32_t)ext->point_cnt;
+            break;
+
+        case ATTR_POINT_SIZE:
+            if(update)
+                lv_obj_set_style_local_size(obj, LV_CHART_PART_SERIES, LV_STATE_DEFAULT, (lv_style_int_t)val);
+            else
+                val = lv_obj_get_style_size(obj, LV_CHART_PART_SERIES);
+            break;
+
+        case ATTR_HDIV:
+            if(update)
+                lv_chart_set_div_line_count(obj, (uint8_t)val, ext->vdiv_cnt);
+            else
+                val = (int32_t)ext->hdiv_cnt;
+            break;
+
+        case ATTR_VDIV:
+            if(update)
+                lv_chart_set_div_line_count(obj, ext->hdiv_cnt, (uint8_t)val);
+            else
+                val = (int32_t)ext->vdiv_cnt;
+            break;
+
+        case ATTR_LINE_WIDTH:
+            if(update)
+                lv_obj_set_style_local_line_width(obj, LV_CHART_PART_SERIES, LV_STATE_DEFAULT, (lv_style_int_t)val);
+            else
+                val = lv_obj_get_style_line_width(obj, LV_CHART_PART_SERIES);
+            break;
+
+        case ATTR_UPDATE_MODE:
+            if(update)
+                lv_chart_set_update_mode(obj, (lv_chart_update_mode_t)(val & 0x01));
+            else
+                val = (int32_t)ext->update_mode;
+            break;
+
+        case ATTR_GRID_DASH_WIDTH:
+            if(update)
+                lv_obj_set_style_local_line_dash_width(obj, LV_CHART_PART_SERIES_BG, LV_STATE_DEFAULT,
+                                                       (lv_style_int_t)val);
+            else
+                val = lv_obj_get_style_line_dash_width(obj, LV_CHART_PART_SERIES_BG);
+            break;
+
+        case ATTR_GRID_DASH_GAP:
+            if(update)
+                lv_obj_set_style_local_line_dash_gap(obj, LV_CHART_PART_SERIES_BG, LV_STATE_DEFAULT,
+                                                     (lv_style_int_t)val);
+            else
+                val = lv_obj_get_style_line_dash_gap(obj, LV_CHART_PART_SERIES_BG);
+            break;
+
+        default:
+            return HASP_ATTR_TYPE_NOT_FOUND;
+    }
+
+    return HASP_ATTR_TYPE_INT;
+}
+
+static bool hasp_chart_set_series(lv_obj_t* obj, const char* payload)
+{
+    // payload: ["#ff0000","#00ff00"]
+    //       or [{"color":"#ff0000"},...]
+    //       or {"type":2,"colors":["#ff0000",...]}  — also sets chart type atomically
+    size_t maxsize = (128u * ((strlen(payload) / 128) + 1)) + 256;
+    DynamicJsonDocument doc(maxsize);
+    if(deserializeJson(doc, payload) != DeserializationError::Ok) return false;
+
+    JsonArray arr;
+    if(doc.is<JsonObject>()) {
+        JsonObject root = doc.as<JsonObject>();
+        if(!root["type"].isNull())
+            lv_chart_set_type(obj, (lv_chart_type_t)(root["type"].as<int>() & 0x0F));
+        arr = root["colors"].as<JsonArray>();
+    } else {
+        arr = doc.as<JsonArray>();
+    }
+    if(arr.isNull()) return false;
+
+    // Remove all existing series
+    lv_chart_ext_t* ext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
+    lv_chart_series_t* ser;
+    while((ser = (lv_chart_series_t*)_lv_ll_get_head(&ext->series_ll)) != NULL)
+        lv_chart_remove_series(obj, ser);
+
+    // Add new series with specified colors
+    for(JsonVariant v : arr) {
+        lv_color32_t c32;
+        const char* color_str = v.is<JsonObject>() ? v["color"].as<const char*>() : v.as<const char*>();
+        lv_color_t color      = LV_COLOR_WHITE;
+        if(color_str && Parser::haspPayloadToColor(color_str, c32))
+            color = lv_color_make(c32.ch.red, c32.ch.green, c32.ch.blue);
+        lv_chart_add_series(obj, color);
+    }
+    lv_chart_refresh(obj);
+    return true;
+}
+
+static bool hasp_chart_set_data(lv_obj_t* obj, const char* payload)
+{
+    // payload: [v1,v2,...]  or  {"ser":0,"data":[v1,v2,...]}
+    size_t maxsize = (128u * ((strlen(payload) / 128) + 1)) + 256;
+    DynamicJsonDocument doc(maxsize);
+    if(deserializeJson(doc, payload) != DeserializationError::Ok) return false;
+
+    uint8_t ser_num = 0;
+    JsonArray arr;
+    if(doc.is<JsonObject>()) {
+        JsonObject jo = doc.as<JsonObject>();
+        ser_num       = jo["ser"] | (uint8_t)0;
+        arr           = jo["data"].as<JsonArray>();
+    } else {
+        arr = doc.as<JsonArray>();
+    }
+    if(arr.isNull()) return false;
+
+    lv_chart_series_t* ser = my_chart_get_series(obj, ser_num);
+    if(!ser) return false;
+
+    lv_chart_clear_series(obj, ser);
+    for(JsonVariant v : arr)
+        lv_chart_set_next(obj, ser, (lv_coord_t)v.as<float>());
+    lv_chart_refresh(obj);
+    return true;
+}
+
+static bool hasp_chart_append_data(lv_obj_t* obj, const char* payload)
+{
+    // payload: 42  or  {"ser":0,"val":42}
+    uint8_t ser_num  = 0;
+    lv_coord_t value = 0;
+
+    if(payload[0] == '{') {
+        StaticJsonDocument<128> doc;
+        if(deserializeJson(doc, payload) != DeserializationError::Ok) return false;
+        ser_num = doc["ser"] | (uint8_t)0;
+        value   = (lv_coord_t)doc["val"].as<float>();
+    } else {
+        value = (lv_coord_t)strtod(payload, nullptr);
+    }
+
+    lv_chart_series_t* ser = my_chart_get_series(obj, ser_num);
+    if(!ser) return false;
+
+    lv_chart_set_next(obj, ser, value);
+    lv_chart_refresh(obj);
+    return true;
+}
+#endif // LV_USE_CHART
+
 static hasp_attribute_type_t hasp_process_gauge_attribute(lv_obj_t* obj, uint16_t attr_hash, int32_t& val, bool update)
 {
     // We already know it's a gauge object
@@ -2879,6 +3048,39 @@ void hasp_process_obj_attribute(lv_obj_t* obj, const char* attribute, const char
                 if(attr_hash == ATTR_POINTS)
                     ret = my_line_set_points(obj, payload) ? HASP_ATTR_TYPE_METHOD_OK : HASP_ATTR_TYPE_RANGE_ERROR;
                 break;
+
+#if LV_USE_CHART > 0
+            case LV_HASP_CHART:
+                switch(attr_hash) {
+                    case ATTR_DATA:
+                        ret = hasp_chart_set_data(obj, payload) ? HASP_ATTR_TYPE_METHOD_OK : HASP_ATTR_TYPE_JSON_INVALID;
+                        break;
+                    case ATTR_APPEND:
+                        ret = hasp_chart_append_data(obj, payload) ? HASP_ATTR_TYPE_METHOD_OK : HASP_ATTR_TYPE_RANGE_ERROR;
+                        break;
+                    case ATTR_SERIES:
+                        ret = hasp_chart_set_series(obj, payload) ? HASP_ATTR_TYPE_METHOD_OK : HASP_ATTR_TYPE_JSON_INVALID;
+                        break;
+                    case ATTR_GRID_COLOR: {
+                        lv_color32_t c32;
+                        if(update) {
+                            if(!Parser::haspPayloadToColor(payload, c32)) {
+                                ret = HASP_ATTR_TYPE_COLOR_INVALID;
+                            } else {
+                                lv_obj_set_style_local_line_color(obj, LV_CHART_PART_SERIES_BG, LV_STATE_DEFAULT,
+                                                                  lv_color_make(c32.ch.red, c32.ch.green, c32.ch.blue));
+                                lv_chart_refresh(obj);
+                                ret = HASP_ATTR_TYPE_METHOD_OK;
+                            }
+                        }
+                        break;
+                    }
+                    default:
+                        val = strtol(payload, nullptr, DEC);
+                        ret = hasp_process_chart_attribute(obj, attr_hash, val, update);
+                }
+                break;
+#endif // LV_USE_CHART
 
             case LV_HASP_CPICKER:
                 if(attr_hash == ATTR_COLOR) {
