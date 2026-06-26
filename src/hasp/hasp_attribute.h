@@ -506,7 +506,11 @@ _HASP_ATTRIBUTE(SCALE_END_LINE_WIDTH, scale_end_line_width, lv_style_int_t)
 #define ATTR_VDIV            24763
 #define ATTR_GRID_DASH_WIDTH 14994
 #define ATTR_GRID_DASH_GAP   37538
-#define ATTR_UPDATE_MODE     56889
+#define ATTR_UPDATE_MODE       56889
+#define ATTR_Y_SCALE           13188
+#define ATTR_SCALE_TEXT_COLOR  53222
+#define ATTR_SCALE_FONT_SIZE   572
+#define ATTR_SCALE_TICK_COLOR  53430
 
 /* hasp user data */
 #define ATTR_ACTION 42102

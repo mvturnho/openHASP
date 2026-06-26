@@ -23,6 +23,47 @@ LV_FONT_DECLARE(unscii_8_icon);
 extern const char** btnmatrix_default_map; // memory pointer to lvgl default btnmatrix map
 extern const char* msgbox_default_map[];   // memory pointer to lvgl default btnmatrix map
 
+#if LV_USE_CHART > 0
+struct chart_pad_t {
+    lv_obj_t* obj;
+    lv_style_int_t auto_pad;
+    lv_style_int_t user_pad;
+};
+static chart_pad_t chart_pads[8];
+static uint8_t chart_pad_cnt = 0;
+
+static lv_style_int_t chart_get_auto_pad(lv_obj_t* obj)
+{
+    for(uint8_t i = 0; i < chart_pad_cnt; i++)
+        if(chart_pads[i].obj == obj) return chart_pads[i].auto_pad;
+    return 0;
+}
+
+static lv_style_int_t chart_get_user_pad(lv_obj_t* obj)
+{
+    for(uint8_t i = 0; i < chart_pad_cnt; i++)
+        if(chart_pads[i].obj == obj) return chart_pads[i].user_pad;
+    return 0;
+}
+
+static void chart_set_pad_state(lv_obj_t* obj, lv_style_int_t auto_pad, lv_style_int_t user_pad)
+{
+    for(uint8_t i = 0; i < chart_pad_cnt; i++) {
+        if(chart_pads[i].obj == obj) {
+            chart_pads[i].auto_pad = auto_pad;
+            chart_pads[i].user_pad = user_pad;
+            return;
+        }
+    }
+    if(chart_pad_cnt < 8) {
+        chart_pads[chart_pad_cnt].obj      = obj;
+        chart_pads[chart_pad_cnt].auto_pad = auto_pad;
+        chart_pads[chart_pad_cnt].user_pad = user_pad;
+        chart_pad_cnt++;
+    }
+}
+#endif
+
 // extern const uint8_t rootca_crt_bundle_start[] asm("_binary_data_cert_x509_crt_bundle_bin_start");
 // extern const uint8_t rootca_crt_bundle_end[] asm("_binary_data_cert_x509_crt_bundle_bin_end");
 
@@ -1286,6 +1327,78 @@ static hasp_attribute_type_t hasp_process_chart_attribute(lv_obj_t* obj, uint16_
     return HASP_ATTR_TYPE_INT;
 }
 
+static bool hasp_chart_set_y_scale(lv_obj_t* obj)
+{
+    lv_chart_ext_t* ext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
+    if(!ext) return false;
+
+    // Free previous label buffer allocated by a prior y_scale call
+    if(ext->y_axis.list_of_values != NULL) {
+        lv_mem_free((void*)ext->y_axis.list_of_values);
+        ext->y_axis.list_of_values = NULL;
+    }
+
+    int16_t ymin       = ext->ymin[LV_CHART_AXIS_PRIMARY_Y];
+    int16_t ymax       = ext->ymax[LV_CHART_AXIS_PRIMARY_Y];
+    uint8_t num_labels = ext->hdiv_cnt + 2; // top + bottom edge + internal divisions
+
+    // 8 chars per label ("-32768\n") × num_labels
+    size_t buf_size = (size_t)num_labels * 8;
+    char* buf = (char*)lv_mem_alloc(buf_size);
+    if(!buf) return false;
+    buf[0] = '\0';
+
+    // Labels ordered top→bottom (max→min), matching LVGL FORWARD iterator
+    for(uint8_t i = 0; i < num_labels; i++) {
+        int16_t value = (int16_t)(ymax - (int32_t)i * (ymax - ymin) / (num_labels - 1));
+        char label[8];
+        snprintf(label, sizeof(label), "%d", (int)value);
+        strcat(buf, label);
+        if(i < num_labels - 1) strcat(buf, "\n");
+    }
+
+    lv_chart_set_y_tick_texts(obj, buf, 1, LV_CHART_AXIS_DRAW_LAST_TICK);
+    lv_chart_set_y_tick_length(obj, LV_CHART_TICK_LENGTH_AUTO, LV_CHART_TICK_LENGTH_AUTO);
+
+    // Auto-compute left padding so labels are not clipped outside the chart
+    const lv_font_t* font         = lv_obj_get_style_text_font(obj, LV_CHART_PART_BG);
+    lv_style_int_t letter_space   = lv_obj_get_style_text_letter_space(obj, LV_CHART_PART_BG);
+    lv_style_int_t label_dist     = lv_obj_get_style_pad_left(obj, LV_CHART_PART_SERIES_BG);
+
+    // Find the widest rendered label string
+    lv_coord_t max_label_w = 0;
+    const char* p = buf;
+    while(*p) {
+        lv_coord_t w   = 0;
+        bool first_chr = true;
+        while(*p && *p != '\n') {
+            uint32_t cur  = (uint32_t)(uint8_t)*p;
+            uint32_t next = (uint32_t)(uint8_t)*(p + 1);
+            if(!first_chr) w += letter_space;
+            w += lv_font_get_glyph_width(font, cur, next ? next : 0);
+            first_chr = false;
+            p++;
+        }
+        if(w > max_label_w) max_label_w = w;
+        if(*p == '\n') p++;
+    }
+
+    // Tick length at AUTO = series_area_width / 15; use chart outer width as a safe upper bound
+    lv_coord_t chart_w = lv_obj_get_width(obj);
+    lv_coord_t tick_len = chart_w / 15;
+    if(tick_len < 2) tick_len = 2;
+
+    // auto_pad = tick + gap between tick and label + label width + 1px boundary offset
+    lv_style_int_t auto_pad = (lv_style_int_t)(tick_len + label_dist + max_label_w + 1);
+
+    lv_style_int_t user_extra = chart_get_user_pad(obj);
+    chart_set_pad_state(obj, auto_pad, user_extra);
+    lv_obj_set_style_local_pad_left(obj, LV_CHART_PART_BG, LV_STATE_DEFAULT, auto_pad + user_extra);
+
+    lv_chart_refresh(obj);
+    return true;
+}
+
 static bool hasp_chart_set_series(lv_obj_t* obj, const char* payload)
 {
     // payload: ["#ff0000","#00ff00"]
@@ -2456,10 +2569,15 @@ static hasp_attribute_type_t attribute_common_range(lv_obj_t* obj, int32_t& val,
         case LV_HASP_CHART:
             if(update && (set_min ? val : min) == (set_max ? val : max))
                 return HASP_ATTR_TYPE_RANGE_ERROR; // prevent setting  min=max
-            if(update)
+            if(update) {
                 lv_chart_set_range(obj, set_min ? val : min, set_max ? val : max);
-            else
+                // Regenerate y_scale labels if they are already active
+                lv_chart_ext_t* cext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
+                if(cext && cext->y_axis.list_of_values != NULL)
+                    hasp_chart_set_y_scale(obj);
+            } else {
                 val = set_min ? min : max;
+            }
             break;
 #endif
 
@@ -3011,6 +3129,30 @@ void hasp_process_obj_attribute(lv_obj_t* obj, const char* attribute, const char
             ret = special_attribute_src(obj, payload, &text, update);
             break;
 
+#if LV_USE_CHART > 0
+        case ATTR_PAD_LEFT: {
+            // For chart objects: always store the user value so y_scale can add it later,
+            // regardless of whether y_scale has already been called.
+            // Only intercept bare "pad_left" (no part suffix) so "pad_left1" etc. reach generic handling.
+            if(update && obj_get_type(obj) == LV_HASP_CHART) {
+                size_t alen = strlen(attribute);
+                bool has_part_suffix = (alen > 0 && attribute[alen - 1] >= '0' && attribute[alen - 1] <= '9');
+                if(!has_part_suffix) {
+                    val = strtol(payload, nullptr, DEC);
+                    lv_style_int_t auto_pad = chart_get_auto_pad(obj); // 0 when y_scale not yet active
+                    chart_set_pad_state(obj, auto_pad, (lv_style_int_t)val);
+                    lv_obj_set_style_local_pad_left(obj, LV_CHART_PART_BG, LV_STATE_DEFAULT,
+                                                    auto_pad + (lv_style_int_t)val);
+                    lv_chart_refresh(obj);
+                    ret = HASP_ATTR_TYPE_INT;
+                    break;
+                }
+            }
+            ret = hasp_local_style_attr(obj, attribute, attr_hash, payload, update, val);
+            break;
+        }
+#endif
+
         default: {
             ret = hasp_local_style_attr(obj, attribute, attr_hash, payload, update, val);
         }
@@ -3071,6 +3213,72 @@ void hasp_process_obj_attribute(lv_obj_t* obj, const char* attribute, const char
                                                                   lv_color_make(c32.ch.red, c32.ch.green, c32.ch.blue));
                                 lv_chart_refresh(obj);
                                 ret = HASP_ATTR_TYPE_METHOD_OK;
+                            }
+                        }
+                        break;
+                    }
+                    case ATTR_Y_SCALE:
+                        if(update) {
+                            if(Parser::is_true(payload)) {
+                                ret = hasp_chart_set_y_scale(obj) ? HASP_ATTR_TYPE_METHOD_OK
+                                                                   : HASP_ATTR_TYPE_RANGE_ERROR;
+                            } else {
+                                // Disable: free label buffer and restore auto padding to zero
+                                lv_chart_ext_t* yext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
+                                if(yext && yext->y_axis.list_of_values != NULL) {
+                                    lv_mem_free((void*)yext->y_axis.list_of_values);
+                                    yext->y_axis.list_of_values = NULL;
+                                }
+                                lv_style_int_t user_pad = chart_get_user_pad(obj);
+                                chart_set_pad_state(obj, 0, user_pad);
+                                lv_obj_set_style_local_pad_left(obj, LV_CHART_PART_BG, LV_STATE_DEFAULT, user_pad);
+                                lv_chart_refresh(obj);
+                                ret = HASP_ATTR_TYPE_METHOD_OK;
+                            }
+                        }
+                        break;
+                    case ATTR_SCALE_TEXT_COLOR: {
+                        lv_color32_t c32;
+                        if(update) {
+                            if(!Parser::haspPayloadToColor(payload, c32)) {
+                                ret = HASP_ATTR_TYPE_COLOR_INVALID;
+                            } else {
+                                lv_obj_set_style_local_text_color(obj, LV_CHART_PART_BG, LV_STATE_DEFAULT,
+                                                                  lv_color_make(c32.ch.red, c32.ch.green, c32.ch.blue));
+                                lv_chart_refresh(obj);
+                                ret = HASP_ATTR_TYPE_METHOD_OK;
+                            }
+                        }
+                        break;
+                    }
+                    case ATTR_SCALE_TICK_COLOR: {
+                        lv_color32_t c32;
+                        if(update) {
+                            if(!Parser::haspPayloadToColor(payload, c32)) {
+                                ret = HASP_ATTR_TYPE_COLOR_INVALID;
+                            } else {
+                                lv_obj_set_style_local_line_color(obj, LV_CHART_PART_BG, LV_STATE_DEFAULT,
+                                                                  lv_color_make(c32.ch.red, c32.ch.green, c32.ch.blue));
+                                lv_chart_refresh(obj);
+                                ret = HASP_ATTR_TYPE_METHOD_OK;
+                            }
+                        }
+                        break;
+                    }
+                    case ATTR_SCALE_FONT_SIZE: {
+                        if(update) {
+                            lv_font_t* font = haspPayloadToFont(payload);
+                            if(font) {
+                                lv_obj_set_style_local_text_font(obj, LV_CHART_PART_BG, LV_STATE_DEFAULT, font);
+                                // If y_scale is active recompute auto padding with the new font metrics
+                                lv_chart_ext_t* cext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
+                                if(cext && cext->y_axis.list_of_values != NULL)
+                                    hasp_chart_set_y_scale(obj);
+                                else
+                                    lv_chart_refresh(obj);
+                                ret = HASP_ATTR_TYPE_METHOD_OK;
+                            } else {
+                                ret = HASP_ATTR_TYPE_RANGE_ERROR;
                             }
                         }
                         break;
