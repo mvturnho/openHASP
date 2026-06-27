@@ -99,6 +99,8 @@
 #define D_ATTRIBUTE_PAGE_METHOD_INVALID "%s is ongeldig voor een pagina"
 #define D_ATTRIBUTE_ALIGN_INVALID "Ongeldig align attribuut: %s"
 #define D_ATTRIBUTE_COLOR_INVALID "Ongeldige kleur: %s"
+#define D_ATTRIBUTE_JSON_INVALID "Invalid JSON for %s"
+#define D_ATTRIBUTE_RANGE_INVALID "Value out of range for %s"
 #define D_ATTRIBUTE_LONG_MODE_INVALID "Ongeldige long mode: %s"
 
 #define D_OOBE_SSID_VALIDATED "SSID %s gevalideerd"

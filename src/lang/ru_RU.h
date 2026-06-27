@@ -99,6 +99,8 @@
 #define D_ATTRIBUTE_PAGE_METHOD_INVALID "Невозможно вызвать %s на странице"
 #define D_ATTRIBUTE_ALIGN_INVALID "Недопустимое свойство выравнивания: %s"
 #define D_ATTRIBUTE_COLOR_INVALID "Недопустимое свойство цвета: %s"
+#define D_ATTRIBUTE_JSON_INVALID "Invalid JSON for %s"
+#define D_ATTRIBUTE_RANGE_INVALID "Value out of range for %s"
 #define D_ATTRIBUTE_LONG_MODE_INVALID "Недопустимый режим длины: %s"
 
 #define D_OOBE_SSID_VALIDATED "SSID %s подтвержден"

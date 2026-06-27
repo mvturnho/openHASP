@@ -508,6 +508,9 @@ _HASP_ATTRIBUTE(SCALE_END_LINE_WIDTH, scale_end_line_width, lv_style_int_t)
 #define ATTR_GRID_DASH_GAP   37538
 #define ATTR_UPDATE_MODE       56889
 #define ATTR_Y_SCALE           13188
+#define ATTR_X_SCALE           17667
+#define ATTR_T_START           26935
+#define ATTR_T_STEP            14199
 #define ATTR_DECIMALS          63106
 #define ATTR_SCALE_TEXT_COLOR  53222
 #define ATTR_SCALE_FONT_SIZE   572

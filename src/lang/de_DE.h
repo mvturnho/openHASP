@@ -99,6 +99,8 @@
 #define D_ATTRIBUTE_PAGE_METHOD_INVALID "Unerlaubter Aufruf auf Seite %s"
 #define D_ATTRIBUTE_ALIGN_INVALID "Ungültige Ausrichtung: %s"
 #define D_ATTRIBUTE_COLOR_INVALID "Ungültige Farbe: %s"
+#define D_ATTRIBUTE_JSON_INVALID "Invalid JSON for %s"
+#define D_ATTRIBUTE_RANGE_INVALID "Value out of range for %s"
 #define D_ATTRIBUTE_LONG_MODE_INVALID "Ungültiger langer Modus: %s"
 
 #define D_OOBE_SSID_VALIDATED "SSID %s überprüft"

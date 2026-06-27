@@ -99,6 +99,8 @@
 #define D_ATTRIBUTE_PAGE_METHOD_INVALID "Não foi possível chamar %s em uma página"
 #define D_ATTRIBUTE_ALIGN_INVALID "Propriedade de alinhamento inválida: %s"
 #define D_ATTRIBUTE_COLOR_INVALID "Propriedade de cor inválida: %s"
+#define D_ATTRIBUTE_JSON_INVALID "Invalid JSON for %s"
+#define D_ATTRIBUTE_RANGE_INVALID "Value out of range for %s"
 #define D_ATTRIBUTE_LONG_MODE_INVALID "Modo longo inválido: %s"
 
 #define D_OOBE_SSID_VALIDATED "SSID %s validado"

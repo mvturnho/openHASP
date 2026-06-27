@@ -28,7 +28,9 @@ struct chart_pad_t {
     lv_obj_t* obj;
     lv_style_int_t auto_pad;
     lv_style_int_t user_pad;
-    uint8_t decimals; // 0=integer, 1=one decimal place (×10), 2=two decimal places (×100)
+    uint8_t decimals;  // 0=integer, 1=one decimal place (×10), 2=two decimal places (×100)
+    uint32_t t_start;  // unix timestamp of first data point (0 = not set)
+    uint32_t t_step;   // seconds between consecutive data points (0 = not set)
 };
 static chart_pad_t chart_pads[8];
 static uint8_t chart_pad_cnt = 0;
@@ -76,6 +78,8 @@ static void chart_set_pad_state(lv_obj_t* obj, lv_style_int_t auto_pad, lv_style
         chart_pads[chart_pad_cnt].auto_pad = auto_pad;
         chart_pads[chart_pad_cnt].user_pad = user_pad;
         chart_pads[chart_pad_cnt].decimals = 0;
+        chart_pads[chart_pad_cnt].t_start  = 0;
+        chart_pads[chart_pad_cnt].t_step   = 0;
         chart_pad_cnt++;
     }
 }
@@ -93,6 +97,42 @@ static void chart_set_decimals(lv_obj_t* obj, uint8_t decimals)
         chart_pads[chart_pad_cnt].auto_pad = 0;
         chart_pads[chart_pad_cnt].user_pad = 0;
         chart_pads[chart_pad_cnt].decimals = decimals;
+        chart_pads[chart_pad_cnt].t_start  = 0;
+        chart_pads[chart_pad_cnt].t_step   = 0;
+        chart_pad_cnt++;
+    }
+}
+
+static uint32_t chart_get_t_start(lv_obj_t* obj)
+{
+    for(uint8_t i = 0; i < chart_pad_cnt; i++)
+        if(chart_pads[i].obj == obj) return chart_pads[i].t_start;
+    return 0;
+}
+
+static uint32_t chart_get_t_step(lv_obj_t* obj)
+{
+    for(uint8_t i = 0; i < chart_pad_cnt; i++)
+        if(chart_pads[i].obj == obj) return chart_pads[i].t_step;
+    return 0;
+}
+
+static void chart_set_time_info(lv_obj_t* obj, uint32_t t_start, uint32_t t_step)
+{
+    for(uint8_t i = 0; i < chart_pad_cnt; i++) {
+        if(chart_pads[i].obj == obj) {
+            chart_pads[i].t_start = t_start;
+            chart_pads[i].t_step  = t_step;
+            return;
+        }
+    }
+    if(chart_pad_cnt < 8) {
+        chart_pads[chart_pad_cnt].obj      = obj;
+        chart_pads[chart_pad_cnt].auto_pad = 0;
+        chart_pads[chart_pad_cnt].user_pad = 0;
+        chart_pads[chart_pad_cnt].decimals = 0;
+        chart_pads[chart_pad_cnt].t_start  = t_start;
+        chart_pads[chart_pad_cnt].t_step   = t_step;
         chart_pad_cnt++;
     }
 }
@@ -1285,6 +1325,7 @@ static hasp_attribute_type_t special_attribute_direction(lv_obj_t* obj, uint16_t
 
 #if LV_USE_CHART > 0
 static bool hasp_chart_set_y_scale(lv_obj_t* obj); // forward declaration
+static bool hasp_chart_set_x_scale(lv_obj_t* obj); // forward declaration
 static hasp_attribute_type_t hasp_process_chart_attribute(lv_obj_t* obj, uint16_t attr_hash, int32_t& val, bool update)
 {
     lv_chart_ext_t* ext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
@@ -1353,6 +1394,24 @@ static hasp_attribute_type_t hasp_process_chart_attribute(lv_obj_t* obj, uint16_
                                                      (lv_style_int_t)val);
             else
                 val = lv_obj_get_style_line_dash_gap(obj, LV_CHART_PART_SERIES_BG);
+            break;
+
+        case ATTR_T_START:
+            if(update) {
+                chart_set_time_info(obj, (uint32_t)val, chart_get_t_step(obj));
+                hasp_chart_set_x_scale(obj);
+            } else {
+                val = (int32_t)chart_get_t_start(obj);
+            }
+            break;
+
+        case ATTR_T_STEP:
+            if(update) {
+                chart_set_time_info(obj, chart_get_t_start(obj), (uint32_t)val);
+                hasp_chart_set_x_scale(obj);
+            } else {
+                val = (int32_t)chart_get_t_step(obj);
+            }
             break;
 
         case ATTR_DECIMALS: {
@@ -1465,6 +1524,74 @@ static bool hasp_chart_set_y_scale(lv_obj_t* obj)
     return true;
 }
 
+static bool hasp_chart_set_x_scale(lv_obj_t* obj)
+{
+    uint32_t t_start = chart_get_t_start(obj);
+    uint32_t t_step  = chart_get_t_step(obj);
+    if(t_step == 0) t_step = 1; // default step so index labels can be shown before data arrives
+
+    lv_chart_ext_t* ext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
+    if(!ext) return false;
+
+    uint8_t num_labels = ext->vdiv_cnt + 2; // left edge + internal divisions + right edge
+    uint16_t point_cnt = ext->point_cnt;
+    if(num_labels < 2 || point_cnt < 2) return false;
+
+    // 10 bytes per label: "30 Sep\n" (7) or "23:59\n" (6) or "999\n" (4), null-term fits in 10
+    size_t label_max = 10;
+    size_t buf_size  = (size_t)num_labels * label_max;
+    char* buf = (char*)lv_mem_alloc(buf_size);
+    if(!buf) return false;
+    buf[0] = '\0';
+
+    int prev_yday = -1;
+    for(uint8_t i = 0; i < num_labels; i++) {
+        uint32_t point_idx = (uint32_t)i * (point_cnt - 1) / (num_labels - 1);
+
+        char label[10];
+        if(t_start == 0) {
+            // No timestamp data yet — show sequential point indices as placeholder
+            snprintf(label, sizeof(label), "%u", (unsigned)point_idx);
+        } else {
+            // HA-style mixed labels: new-day ticks show "DD Mon", same-day ticks show "H:MM"
+            time_t t = (time_t)(t_start + point_idx * t_step);
+            struct tm ti;
+            localtime_r(&t, &ti);
+            if(ti.tm_yday != prev_yday) {
+                strftime(label, sizeof(label), "%d %b", &ti);
+            } else {
+                snprintf(label, sizeof(label), "%d:%02d", ti.tm_hour, ti.tm_min);
+            }
+            prev_yday = ti.tm_yday;
+        }
+
+        strncat(buf, label, buf_size - strlen(buf) - 1);
+        if(i < num_labels - 1) strncat(buf, "\n", buf_size - strlen(buf) - 1);
+    }
+
+    // Free previous x-axis label buffer before handing ownership to LVGL
+    if(ext->x_axis.list_of_values != NULL) {
+        lv_mem_free((void*)ext->x_axis.list_of_values);
+        ext->x_axis.list_of_values = NULL;
+    }
+
+    lv_chart_set_x_tick_texts(obj, buf, 1, LV_CHART_AXIS_DRAW_LAST_TICK);
+    lv_chart_set_x_tick_length(obj, LV_CHART_TICK_LENGTH_AUTO, LV_CHART_TICK_LENGTH_AUTO);
+
+    // Auto bottom padding so labels are not clipped
+    const lv_font_t* font    = lv_obj_get_style_text_font(obj, LV_CHART_PART_BG);
+    lv_coord_t font_h        = lv_font_get_line_height(font);
+    lv_style_int_t label_gap = lv_obj_get_style_pad_bottom(obj, LV_CHART_PART_SERIES_BG);
+    lv_coord_t chart_h       = lv_obj_get_height(obj);
+    lv_coord_t tick_len      = chart_h / 15;
+    if(tick_len < 2) tick_len = 2;
+    lv_style_int_t pad_bottom = (lv_style_int_t)(tick_len + label_gap + font_h + 1);
+    lv_obj_set_style_local_pad_bottom(obj, LV_CHART_PART_BG, LV_STATE_DEFAULT, pad_bottom);
+
+    lv_chart_refresh(obj);
+    return true;
+}
+
 static bool hasp_chart_set_series(lv_obj_t* obj, const char* payload)
 {
     // payload: ["#ff0000","#00ff00"]
@@ -1515,7 +1642,7 @@ static bool hasp_chart_set_data(lv_obj_t* obj, const char* payload)
     uint16_t point_cnt   = cext ? cext->point_cnt : 100;
     size_t payload_len   = strlen(payload);
     uint16_t capacity    = (uint16_t)std::max((size_t)point_cnt, payload_len / 4);
-    size_t maxsize       = JSON_ARRAY_SIZE(capacity) + JSON_OBJECT_SIZE(2) + 64;
+    size_t maxsize       = JSON_ARRAY_SIZE(capacity) + JSON_OBJECT_SIZE(4) + 64;
     DynamicJsonDocument doc(maxsize);
     if(deserializeJson(doc, payload) != DeserializationError::Ok) return false;
 
@@ -1525,6 +1652,9 @@ static bool hasp_chart_set_data(lv_obj_t* obj, const char* payload)
         JsonObject jo = doc.as<JsonObject>();
         ser_num       = jo["ser"] | (uint8_t)0;
         arr           = jo["data"].as<JsonArray>();
+        uint32_t t_start = jo["t_start"] | (uint32_t)0;
+        uint32_t t_step  = jo["t_step"]  | (uint32_t)0;
+        if(t_start > 0 && t_step > 0) chart_set_time_info(obj, t_start, t_step);
     } else {
         arr = doc.as<JsonArray>();
     }
@@ -1539,6 +1669,8 @@ static bool hasp_chart_set_data(lv_obj_t* obj, const char* payload)
         lv_coord_t coord = (lv_coord_t)roundf(v.as<float>() * scale);
         lv_chart_set_next(obj, ser, coord);
     }
+
+    hasp_chart_set_x_scale(obj);
     lv_chart_refresh(obj);
     return true;
 }
@@ -3325,6 +3457,25 @@ void hasp_process_obj_attribute(lv_obj_t* obj, const char* attribute, const char
                             }
                         }
                         break;
+                    case ATTR_X_SCALE:
+                        if(update) {
+                            if(Parser::is_true(payload)) {
+                                ret = hasp_chart_set_x_scale(obj) ? HASP_ATTR_TYPE_METHOD_OK
+                                                                   : HASP_ATTR_TYPE_RANGE_ERROR;
+                            } else {
+                                // Disable: free x-axis label buffer and restore bottom padding
+                                lv_chart_ext_t* xext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
+                                if(xext && xext->x_axis.list_of_values != NULL) {
+                                    lv_mem_free((void*)xext->x_axis.list_of_values);
+                                    xext->x_axis.list_of_values = NULL;
+                                }
+                                lv_style_int_t user_pad = chart_get_user_pad(obj);
+                                lv_obj_set_style_local_pad_bottom(obj, LV_CHART_PART_BG, LV_STATE_DEFAULT, user_pad);
+                                lv_chart_refresh(obj);
+                                ret = HASP_ATTR_TYPE_METHOD_OK;
+                            }
+                        }
+                        break;
                     case ATTR_SCALE_TEXT_COLOR: {
                         lv_color32_t c32;
                         if(update) {
@@ -3427,6 +3578,18 @@ void hasp_process_obj_attribute(lv_obj_t* obj, const char* attribute, const char
             LOG_WARNING(TAG_ATTR, F(D_ATTRIBUTE_READ_ONLY), attribute);
         case HASP_ATTR_TYPE_JSON:
             attr_out_json(obj, attribute, text);
+            break;
+
+        case HASP_ATTR_TYPE_JSON_INVALID:
+            LOG_WARNING(TAG_ATTR, F(D_ATTRIBUTE_JSON_INVALID), attribute);
+            break;
+
+        case HASP_ATTR_TYPE_RANGE_ERROR:
+            LOG_WARNING(TAG_ATTR, F(D_ATTRIBUTE_RANGE_INVALID), attribute);
+            break;
+
+        case HASP_ATTR_TYPE_LONG_MODE_INVALID:
+            LOG_WARNING(TAG_ATTR, F(D_ATTRIBUTE_LONG_MODE_INVALID), payload);
             break;
 
         case HASP_ATTR_TYPE_COLOR_INVALID:

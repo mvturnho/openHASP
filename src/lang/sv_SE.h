@@ -99,6 +99,8 @@
 #define D_ATTRIBUTE_PAGE_METHOD_INVALID "Kan inte anropa %s på en sida"
 #define D_ATTRIBUTE_ALIGN_INVALID "Ogiltig align-värde: %s"
 #define D_ATTRIBUTE_COLOR_INVALID "Ogiltig färg-värde: %s"
+#define D_ATTRIBUTE_JSON_INVALID "Invalid JSON for %s"
+#define D_ATTRIBUTE_RANGE_INVALID "Value out of range for %s"
 #define D_ATTRIBUTE_LONG_MODE_INVALID "Ogiltigt long-läge: %s"
 
 #define D_OOBE_SSID_VALIDATED "SSID %s validerat"
