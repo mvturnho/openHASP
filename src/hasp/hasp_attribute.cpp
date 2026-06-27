@@ -28,6 +28,7 @@ struct chart_pad_t {
     lv_obj_t* obj;
     lv_style_int_t auto_pad;
     lv_style_int_t user_pad;
+    uint8_t decimals; // 0=integer, 1=one decimal place (×10), 2=two decimal places (×100)
 };
 static chart_pad_t chart_pads[8];
 static uint8_t chart_pad_cnt = 0;
@@ -46,6 +47,21 @@ static lv_style_int_t chart_get_user_pad(lv_obj_t* obj)
     return 0;
 }
 
+static uint8_t chart_get_decimals(lv_obj_t* obj)
+{
+    for(uint8_t i = 0; i < chart_pad_cnt; i++)
+        if(chart_pads[i].obj == obj) return chart_pads[i].decimals;
+    return 0;
+}
+
+static uint16_t chart_get_scale(lv_obj_t* obj)
+{
+    uint8_t d   = chart_get_decimals(obj);
+    uint16_t s  = 1;
+    while(d--) s *= 10;
+    return s;
+}
+
 static void chart_set_pad_state(lv_obj_t* obj, lv_style_int_t auto_pad, lv_style_int_t user_pad)
 {
     for(uint8_t i = 0; i < chart_pad_cnt; i++) {
@@ -59,6 +75,24 @@ static void chart_set_pad_state(lv_obj_t* obj, lv_style_int_t auto_pad, lv_style
         chart_pads[chart_pad_cnt].obj      = obj;
         chart_pads[chart_pad_cnt].auto_pad = auto_pad;
         chart_pads[chart_pad_cnt].user_pad = user_pad;
+        chart_pads[chart_pad_cnt].decimals = 0;
+        chart_pad_cnt++;
+    }
+}
+
+static void chart_set_decimals(lv_obj_t* obj, uint8_t decimals)
+{
+    for(uint8_t i = 0; i < chart_pad_cnt; i++) {
+        if(chart_pads[i].obj == obj) {
+            chart_pads[i].decimals = decimals;
+            return;
+        }
+    }
+    if(chart_pad_cnt < 8) {
+        chart_pads[chart_pad_cnt].obj      = obj;
+        chart_pads[chart_pad_cnt].auto_pad = 0;
+        chart_pads[chart_pad_cnt].user_pad = 0;
+        chart_pads[chart_pad_cnt].decimals = decimals;
         chart_pad_cnt++;
     }
 }
@@ -1250,6 +1284,7 @@ static hasp_attribute_type_t special_attribute_direction(lv_obj_t* obj, uint16_t
 }
 
 #if LV_USE_CHART > 0
+static bool hasp_chart_set_y_scale(lv_obj_t* obj); // forward declaration
 static hasp_attribute_type_t hasp_process_chart_attribute(lv_obj_t* obj, uint16_t attr_hash, int32_t& val, bool update)
 {
     lv_chart_ext_t* ext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
@@ -1320,6 +1355,30 @@ static hasp_attribute_type_t hasp_process_chart_attribute(lv_obj_t* obj, uint16_
                 val = lv_obj_get_style_line_dash_gap(obj, LV_CHART_PART_SERIES_BG);
             break;
 
+        case ATTR_DECIMALS: {
+            if(update) {
+                uint8_t new_dec    = (uint8_t)(val < 0 ? 0 : val > 2 ? 2 : val);
+                uint16_t old_scale = chart_get_scale(obj);
+                chart_set_decimals(obj, new_dec);
+                uint16_t new_scale = chart_get_scale(obj);
+                if(old_scale != new_scale) {
+                    // Rescale the existing internal y-range so user-visible units stay the same
+                    int32_t new_ymin = (int32_t)ext->ymin[LV_CHART_AXIS_PRIMARY_Y] * new_scale / old_scale;
+                    int32_t new_ymax = (int32_t)ext->ymax[LV_CHART_AXIS_PRIMARY_Y] * new_scale / old_scale;
+                    if(new_ymin < LV_COORD_MIN) new_ymin = LV_COORD_MIN;
+                    if(new_ymin > LV_COORD_MAX) new_ymin = LV_COORD_MAX;
+                    if(new_ymax < LV_COORD_MIN) new_ymax = LV_COORD_MIN;
+                    if(new_ymax > LV_COORD_MAX) new_ymax = LV_COORD_MAX;
+                    lv_chart_set_range(obj, (lv_coord_t)new_ymin, (lv_coord_t)new_ymax);
+                    if(ext->y_axis.list_of_values != NULL)
+                        hasp_chart_set_y_scale(obj);
+                }
+            } else {
+                val = (int32_t)chart_get_decimals(obj);
+            }
+            break;
+        }
+
         default:
             return HASP_ATTR_TYPE_NOT_FOUND;
     }
@@ -1342,17 +1401,24 @@ static bool hasp_chart_set_y_scale(lv_obj_t* obj)
     int16_t ymax       = ext->ymax[LV_CHART_AXIS_PRIMARY_Y];
     uint8_t num_labels = ext->hdiv_cnt + 2; // top + bottom edge + internal divisions
 
-    // 8 chars per label ("-32768\n") × num_labels
-    size_t buf_size = (size_t)num_labels * 8;
+    // 10 chars per label: "-3276.8\n" (decimals=1) or "-327.68\n" (decimals=2) worst case
+    size_t buf_size = (size_t)num_labels * 10;
     char* buf = (char*)lv_mem_alloc(buf_size);
     if(!buf) return false;
     buf[0] = '\0';
 
+    uint8_t decimals = chart_get_decimals(obj);
+
     // Labels ordered top→bottom (max→min), matching LVGL FORWARD iterator
     for(uint8_t i = 0; i < num_labels; i++) {
         int16_t value = (int16_t)(ymax - (int32_t)i * (ymax - ymin) / (num_labels - 1));
-        char label[8];
-        snprintf(label, sizeof(label), "%d", (int)value);
+        char label[10];
+        if(decimals == 0)
+            snprintf(label, sizeof(label), "%d", (int)value);
+        else if(decimals == 1)
+            snprintf(label, sizeof(label), "%.1f", (float)value / 10.0f);
+        else
+            snprintf(label, sizeof(label), "%.2f", (float)value / 100.0f);
         strcat(buf, label);
         if(i < num_labels - 1) strcat(buf, "\n");
     }
@@ -1441,7 +1507,15 @@ static bool hasp_chart_set_series(lv_obj_t* obj, const char* payload)
 static bool hasp_chart_set_data(lv_obj_t* obj, const char* payload)
 {
     // payload: [v1,v2,...]  or  {"ser":0,"data":[v1,v2,...]}
-    size_t maxsize = (128u * ((strlen(payload) / 128) + 1)) + 256;
+    // Size the document by the larger of point_cnt and a payload-length estimate.
+    // ArduinoJson needs N*sizeof(VariantSlot) per element (not proportional to string length),
+    // so use payload_len/4 as a generous upper bound on element count when the sender
+    // provides more points than point_cnt (e.g. series with history_hours > point_count).
+    lv_chart_ext_t* cext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
+    uint16_t point_cnt   = cext ? cext->point_cnt : 100;
+    size_t payload_len   = strlen(payload);
+    uint16_t capacity    = (uint16_t)std::max((size_t)point_cnt, payload_len / 4);
+    size_t maxsize       = JSON_ARRAY_SIZE(capacity) + JSON_OBJECT_SIZE(2) + 64;
     DynamicJsonDocument doc(maxsize);
     if(deserializeJson(doc, payload) != DeserializationError::Ok) return false;
 
@@ -1460,8 +1534,11 @@ static bool hasp_chart_set_data(lv_obj_t* obj, const char* payload)
     if(!ser) return false;
 
     lv_chart_clear_series(obj, ser);
-    for(JsonVariant v : arr)
-        lv_chart_set_next(obj, ser, (lv_coord_t)v.as<float>());
+    uint16_t scale = chart_get_scale(obj);
+    for(JsonVariant v : arr) {
+        lv_coord_t coord = (lv_coord_t)roundf(v.as<float>() * scale);
+        lv_chart_set_next(obj, ser, coord);
+    }
     lv_chart_refresh(obj);
     return true;
 }
@@ -1469,21 +1546,23 @@ static bool hasp_chart_set_data(lv_obj_t* obj, const char* payload)
 static bool hasp_chart_append_data(lv_obj_t* obj, const char* payload)
 {
     // payload: 42  or  {"ser":0,"val":42}
-    uint8_t ser_num  = 0;
-    lv_coord_t value = 0;
+    uint8_t ser_num = 0;
+    float fvalue    = 0.0f;
 
     if(payload[0] == '{') {
         StaticJsonDocument<128> doc;
         if(deserializeJson(doc, payload) != DeserializationError::Ok) return false;
         ser_num = doc["ser"] | (uint8_t)0;
-        value   = (lv_coord_t)doc["val"].as<float>();
+        fvalue  = doc["val"].as<float>();
     } else {
-        value = (lv_coord_t)strtod(payload, nullptr);
+        fvalue = (float)strtod(payload, nullptr);
     }
 
     lv_chart_series_t* ser = my_chart_get_series(obj, ser_num);
     if(!ser) return false;
 
+    uint16_t scale   = chart_get_scale(obj);
+    lv_coord_t value = (lv_coord_t)roundf(fvalue * scale);
     lv_chart_set_next(obj, ser, value);
     lv_chart_refresh(obj);
     return true;
@@ -2566,19 +2645,28 @@ static hasp_attribute_type_t attribute_common_range(lv_obj_t* obj, int32_t& val,
             break;
 
 #if LV_USE_CHART > 0
-        case LV_HASP_CHART:
-            if(update && (set_min ? val : min) == (set_max ? val : max))
-                return HASP_ATTR_TYPE_RANGE_ERROR; // prevent setting  min=max
+        case LV_HASP_CHART: {
+            // min/max from my_obj_get_range are internal (already scaled); val is in user (float) units.
+            uint16_t scale  = chart_get_scale(obj);
+            int32_t new_min = set_min ? (int32_t)val * scale : min;
+            int32_t new_max = set_max ? (int32_t)val * scale : max;
+            // Clamp to lv_coord_t range (LVGL reserves extremes as sentinel values)
+            if(new_min < LV_COORD_MIN) new_min = LV_COORD_MIN;
+            if(new_min > LV_COORD_MAX) new_min = LV_COORD_MAX;
+            if(new_max < LV_COORD_MIN) new_max = LV_COORD_MIN;
+            if(new_max > LV_COORD_MAX) new_max = LV_COORD_MAX;
+            if(update && new_min == new_max) return HASP_ATTR_TYPE_RANGE_ERROR;
             if(update) {
-                lv_chart_set_range(obj, set_min ? val : min, set_max ? val : max);
+                lv_chart_set_range(obj, (lv_coord_t)new_min, (lv_coord_t)new_max);
                 // Regenerate y_scale labels if they are already active
                 lv_chart_ext_t* cext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
                 if(cext && cext->y_axis.list_of_values != NULL)
                     hasp_chart_set_y_scale(obj);
             } else {
-                val = set_min ? min : max;
+                val = (set_min ? min : max) / (int32_t)scale;
             }
             break;
+        }
 #endif
 
 #if LV_USE_SPINBOX > 0
