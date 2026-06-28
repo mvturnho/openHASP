@@ -1589,7 +1589,8 @@ static bool hasp_chart_set_x_scale(lv_obj_t* obj)
     lv_coord_t chart_h       = lv_obj_get_height(obj);
     lv_coord_t tick_len      = chart_h / 15;
     if(tick_len < 2) tick_len = 2;
-    lv_style_int_t pad_bottom = (lv_style_int_t)(tick_len + label_gap + font_h + 1);
+    lv_style_int_t user_extra = chart_get_user_pad(obj);
+    lv_style_int_t pad_bottom = (lv_style_int_t)(tick_len + label_gap + font_h + 1 + user_extra);
     lv_obj_set_style_local_pad_bottom(obj, LV_CHART_PART_BG, LV_STATE_DEFAULT, pad_bottom);
 
     lv_chart_refresh(obj);
