@@ -1554,9 +1554,13 @@ static bool hasp_chart_set_x_scale(lv_obj_t* obj)
             snprintf(label, sizeof(label), "%u", (unsigned)point_idx);
         } else {
             // HA-style mixed labels: new-day ticks show "DD Mon", same-day ticks show "H:MM"
-            time_t t = (time_t)(t_start + point_idx * t_step);
-            struct tm ti;
-            localtime_r(&t, &ti);
+            // Use localtime() (not localtime_r) to match the rest of openHASP: on ESP32's
+            // newlib, localtime_r does not apply DST from the POSIX TZ string, causing labels
+            // to be one hour behind during summer time. localtime() uses the correct path.
+            time_t t       = (time_t)(t_start + point_idx * t_step);
+            struct tm* tip = localtime(&t);
+            if(!tip) continue;
+            struct tm ti   = *tip;
             if(ti.tm_yday != prev_yday) {
                 strftime(label, sizeof(label), "%d %b", &ti);
             } else {
@@ -1677,15 +1681,22 @@ static bool hasp_chart_set_data(lv_obj_t* obj, const char* payload)
 
 static bool hasp_chart_append_data(lv_obj_t* obj, const char* payload)
 {
-    // payload: 42  or  {"ser":0,"val":42}
+    // payload: 42  or  {"ser":0,"val":42}  or  {"ser":0,"t":1782640000,"value":27.3}
     uint8_t ser_num = 0;
     float fvalue    = 0.0f;
+    uint32_t t_new  = 0;
 
     if(payload[0] == '{') {
         StaticJsonDocument<128> doc;
         if(deserializeJson(doc, payload) != DeserializationError::Ok) return false;
         ser_num = doc["ser"] | (uint8_t)0;
-        fvalue  = doc["val"].as<float>();
+        // Accept both "value" (new protocol) and "val" (legacy)
+        if(doc.containsKey("value")) {
+            fvalue = doc["value"].as<float>();
+        } else {
+            fvalue = doc["val"].as<float>();
+        }
+        t_new = doc["t"] | (uint32_t)0;
     } else {
         fvalue = (float)strtod(payload, nullptr);
     }
@@ -1697,6 +1708,25 @@ static bool hasp_chart_append_data(lv_obj_t* obj, const char* payload)
     lv_coord_t value = (lv_coord_t)roundf(fvalue * scale);
     lv_chart_set_next(obj, ser, value);
     lv_chart_refresh(obj);
+
+    // Recalculate t_start from the authoritative timestamp in the update message.
+    // This keeps the chart timeline in sync with Home Assistant regardless of
+    // reconnects, delayed MQTT delivery, or missed updates.
+    if(t_new > 0) {
+        uint32_t t_step = chart_get_t_step(obj);
+        if(t_step > 0) {
+            lv_chart_ext_t* ext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
+            if(ext) {
+                uint16_t point_cnt = ext->point_cnt;
+                uint32_t t_start   = (point_cnt > 1) ? (t_new - (uint32_t)(point_cnt - 1) * t_step) : t_new;
+                chart_set_time_info(obj, t_start, t_step);
+                if(ext->x_axis.list_of_values != NULL) {
+                    hasp_chart_set_x_scale(obj);
+                }
+            }
+        }
+    }
+
     return true;
 }
 #endif // LV_USE_CHART
