@@ -3,6 +3,7 @@
 
 #include "hasplib.h"
 #include "hasp_attribute_helper.h"
+#include "hasp_dataset.h"
 
 /*** Image Improvement ***/
 #if defined(ARDUINO_ARCH_ESP32)
@@ -24,13 +25,17 @@ extern const char** btnmatrix_default_map; // memory pointer to lvgl default btn
 extern const char* msgbox_default_map[];   // memory pointer to lvgl default btnmatrix map
 
 #if LV_USE_CHART > 0
+struct hasp_dataset_t; // forward declaration — full definition via hasp_dataset.h above
 struct chart_pad_t {
-    lv_obj_t* obj;
-    lv_style_int_t auto_pad;
-    lv_style_int_t user_pad;
-    uint8_t decimals;  // 0=integer, 1=one decimal place (×10), 2=two decimal places (×100)
-    uint32_t t_start;  // unix timestamp of first data point (0 = not set)
-    uint32_t t_step;   // seconds between consecutive data points (0 = not set)
+    lv_obj_t*       obj;
+    lv_style_int_t  auto_pad;
+    lv_style_int_t  user_pad;
+    uint8_t         decimals;         // 0=integer, 1=one decimal place (×10), 2=two decimal places (×100)
+    uint32_t        t_start;          // unix timestamp of first data point (0 = not set)
+    uint32_t        t_step;           // seconds between consecutive data points (0 = not set)
+    uint8_t         dataset_id;       // id of the referenced Dataset (0 = none)
+    hasp_dataset_t* dataset;          // pointer to the referenced Dataset (nullptr = none)
+    lv_signal_cb_t  original_signal;  // saved before installing dataset cleanup hook
 };
 static chart_pad_t chart_pads[8];
 static uint8_t chart_pad_cnt = 0;
@@ -74,12 +79,15 @@ static void chart_set_pad_state(lv_obj_t* obj, lv_style_int_t auto_pad, lv_style
         }
     }
     if(chart_pad_cnt < 8) {
-        chart_pads[chart_pad_cnt].obj      = obj;
-        chart_pads[chart_pad_cnt].auto_pad = auto_pad;
-        chart_pads[chart_pad_cnt].user_pad = user_pad;
-        chart_pads[chart_pad_cnt].decimals = 0;
-        chart_pads[chart_pad_cnt].t_start  = 0;
-        chart_pads[chart_pad_cnt].t_step   = 0;
+        chart_pads[chart_pad_cnt].obj             = obj;
+        chart_pads[chart_pad_cnt].auto_pad        = auto_pad;
+        chart_pads[chart_pad_cnt].user_pad        = user_pad;
+        chart_pads[chart_pad_cnt].decimals        = 0;
+        chart_pads[chart_pad_cnt].t_start         = 0;
+        chart_pads[chart_pad_cnt].t_step          = 0;
+        chart_pads[chart_pad_cnt].dataset_id      = 0;
+        chart_pads[chart_pad_cnt].dataset         = nullptr;
+        chart_pads[chart_pad_cnt].original_signal = nullptr;
         chart_pad_cnt++;
     }
 }
@@ -93,12 +101,15 @@ static void chart_set_decimals(lv_obj_t* obj, uint8_t decimals)
         }
     }
     if(chart_pad_cnt < 8) {
-        chart_pads[chart_pad_cnt].obj      = obj;
-        chart_pads[chart_pad_cnt].auto_pad = 0;
-        chart_pads[chart_pad_cnt].user_pad = 0;
-        chart_pads[chart_pad_cnt].decimals = decimals;
-        chart_pads[chart_pad_cnt].t_start  = 0;
-        chart_pads[chart_pad_cnt].t_step   = 0;
+        chart_pads[chart_pad_cnt].obj             = obj;
+        chart_pads[chart_pad_cnt].auto_pad        = 0;
+        chart_pads[chart_pad_cnt].user_pad        = 0;
+        chart_pads[chart_pad_cnt].decimals        = decimals;
+        chart_pads[chart_pad_cnt].t_start         = 0;
+        chart_pads[chart_pad_cnt].t_step          = 0;
+        chart_pads[chart_pad_cnt].dataset_id      = 0;
+        chart_pads[chart_pad_cnt].dataset         = nullptr;
+        chart_pads[chart_pad_cnt].original_signal = nullptr;
         chart_pad_cnt++;
     }
 }
@@ -127,14 +138,70 @@ static void chart_set_time_info(lv_obj_t* obj, uint32_t t_start, uint32_t t_step
         }
     }
     if(chart_pad_cnt < 8) {
-        chart_pads[chart_pad_cnt].obj      = obj;
-        chart_pads[chart_pad_cnt].auto_pad = 0;
-        chart_pads[chart_pad_cnt].user_pad = 0;
-        chart_pads[chart_pad_cnt].decimals = 0;
-        chart_pads[chart_pad_cnt].t_start  = t_start;
-        chart_pads[chart_pad_cnt].t_step   = t_step;
+        chart_pads[chart_pad_cnt].obj             = obj;
+        chart_pads[chart_pad_cnt].auto_pad        = 0;
+        chart_pads[chart_pad_cnt].user_pad        = 0;
+        chart_pads[chart_pad_cnt].decimals        = 0;
+        chart_pads[chart_pad_cnt].t_start         = t_start;
+        chart_pads[chart_pad_cnt].t_step          = t_step;
+        chart_pads[chart_pad_cnt].dataset_id      = 0;
+        chart_pads[chart_pad_cnt].dataset         = nullptr;
+        chart_pads[chart_pad_cnt].original_signal = nullptr;
         chart_pad_cnt++;
     }
+}
+
+static void chart_set_dataset(lv_obj_t* obj, uint8_t dataset_id, hasp_dataset_t* dataset)
+{
+    for(uint8_t i = 0; i < chart_pad_cnt; i++) {
+        if(chart_pads[i].obj == obj) {
+            chart_pads[i].dataset_id = dataset_id;
+            chart_pads[i].dataset    = dataset;
+            return;
+        }
+    }
+    if(chart_pad_cnt < 8) {
+        chart_pads[chart_pad_cnt].obj             = obj;
+        chart_pads[chart_pad_cnt].auto_pad        = 0;
+        chart_pads[chart_pad_cnt].user_pad        = 0;
+        chart_pads[chart_pad_cnt].decimals        = 0;
+        chart_pads[chart_pad_cnt].t_start         = 0;
+        chart_pads[chart_pad_cnt].t_step          = 0;
+        chart_pads[chart_pad_cnt].dataset_id      = dataset_id;
+        chart_pads[chart_pad_cnt].dataset         = dataset;
+        chart_pads[chart_pad_cnt].original_signal = nullptr;
+        chart_pad_cnt++;
+    }
+}
+
+static hasp_dataset_t* chart_get_dataset(lv_obj_t* obj)
+{
+    for(uint8_t i = 0; i < chart_pad_cnt; i++)
+        if(chart_pads[i].obj == obj) return chart_pads[i].dataset;
+    return nullptr;
+}
+
+/* Signal callback installed on charts that are linked to a dataset.
+ * Intercepts LV_SIGNAL_CLEANUP to auto-detach the chart from its dataset
+ * before LVGL frees the object, preventing dangling consumer pointers.
+ * Always chains to the original lv_chart signal handler. */
+static lv_res_t hasp_chart_dataset_signal(lv_obj_t* obj, lv_signal_t sign, void* param)
+{
+    for(uint8_t i = 0; i < chart_pad_cnt; i++) {
+        if(chart_pads[i].obj != obj) continue;
+
+        lv_signal_cb_t orig = chart_pads[i].original_signal;
+
+        if(sign == LV_SIGNAL_CLEANUP) {
+            hasp_dataset_t* ds = chart_get_dataset(obj);
+            if(ds) hasp_dataset_detach(ds, obj);
+            /* Remove this entry and compact the array so the slot is reused. */
+            chart_pads[i] = chart_pads[--chart_pad_cnt];
+        }
+
+        return orig ? orig(obj, sign, param) : LV_RES_OK;
+    }
+    return LV_RES_OK;
 }
 #endif
 
@@ -1597,6 +1664,83 @@ static bool hasp_chart_set_x_scale(lv_obj_t* obj)
     return true;
 }
 
+/* Synchronise the Dataset into the LVGL chart (the rendering cache).
+ *
+ * This is the single point of Dataset→LVGL propagation.  All write
+ * paths (set_data, append, set_series) call this after updating the
+ * Dataset so that the LVGL buffers always reflect the current Dataset
+ * state.  A future LVGL 8/9 migration that supports external arrays
+ * only needs to change this function.
+ */
+static void hasp_chart_sync_from_dataset(lv_obj_t* obj)
+{
+    hasp_dataset_t* ds = chart_get_dataset(obj);
+    if(!ds || !ds->series || ds->series_count == 0) return;
+
+    lv_chart_ext_t* ext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
+    if(!ext) return;
+
+    /* Sync point count from the largest series buffer in the dataset. */
+    uint16_t max_buf = 0;
+    for(uint8_t i = 0; i < ds->series_count; i++) {
+        hasp_series_t* s = hasp_dataset_get_series(ds, i);
+        if(s && s->buf_size > max_buf) max_buf = s->buf_size;
+    }
+    if(max_buf > 0 && max_buf != ext->point_cnt) lv_chart_set_point_count(obj, max_buf);
+
+    if(_lv_ll_get_len(&ext->series_ll) == ds->series_count) {
+        /* Fast path: series count already matches — sync data into existing LVGL series.
+         * Avoids alloc/free of series structs and points buffers on every data update. */
+        for(uint8_t i = 0; i < ds->series_count; i++) {
+            hasp_series_t* ds_ser = hasp_dataset_get_series(ds, i);
+            lv_chart_series_t* lvgl_ser = my_chart_get_series(obj, i);
+            if(!ds_ser || !lvgl_ser) continue;
+            lvgl_ser->color = ds_ser->color;
+            lv_chart_clear_series(obj, lvgl_ser);
+            if(ds_ser->buf && ds_ser->count > 0)
+                for(uint16_t j = 0; j < ds_ser->count; j++)
+                    lv_chart_set_next(obj, lvgl_ser, ds_ser->buf[j]);
+        }
+    } else {
+        /* Full rebuild: series count changed (first link, or layout change). */
+        lv_chart_series_t* ser;
+        while((ser = (lv_chart_series_t*)_lv_ll_get_head(&ext->series_ll)) != NULL)
+            lv_chart_remove_series(obj, ser);
+        for(uint8_t i = 0; i < ds->series_count; i++) {
+            hasp_series_t* ds_ser = hasp_dataset_get_series(ds, i);
+            if(!ds_ser) continue;
+            lv_chart_series_t* lvgl_ser = lv_chart_add_series(obj, ds_ser->color);
+            if(!lvgl_ser) continue;
+            if(ds_ser->buf && ds_ser->count > 0)
+                for(uint16_t j = 0; j < ds_ser->count; j++)
+                    lv_chart_set_next(obj, lvgl_ser, ds_ser->buf[j]);
+        }
+    }
+
+    /* Propagate time metadata (from the first series that has it). */
+    for(uint8_t i = 0; i < ds->series_count; i++) {
+        hasp_series_t* ds_ser = hasp_dataset_get_series(ds, i);
+        if(ds_ser && ds_ser->t_start > 0) {
+            chart_set_time_info(obj, ds_ser->t_start, ds_ser->t_step);
+            break;
+        }
+    }
+
+    /* Recompute axis labels if they were enabled before the sync. */
+    if(ext->x_axis.list_of_values != NULL) hasp_chart_set_x_scale(obj);
+    if(ext->y_axis.list_of_values != NULL) hasp_chart_set_y_scale(obj);
+
+    lv_chart_refresh(obj);
+}
+
+/* Notification callback registered with the Dataset.
+ * Called by hasp_dataset_notify() whenever dataset contents change.
+ * The Dataset passes back the obj pointer supplied at attach time. */
+static void hasp_chart_on_dataset_notify(lv_obj_t* obj)
+{
+    hasp_chart_sync_from_dataset(obj);
+}
+
 static bool hasp_chart_set_series(lv_obj_t* obj, const char* payload)
 {
     // payload: ["#ff0000","#00ff00"]
@@ -1617,13 +1761,30 @@ static bool hasp_chart_set_series(lv_obj_t* obj, const char* payload)
     }
     if(arr.isNull()) return false;
 
-    // Remove all existing series
+    /* Dataset path: persist colors in the dataset, then notify consumers. */
+    hasp_dataset_t* ds = chart_get_dataset(obj);
+    if(ds) {
+        uint8_t i = 0;
+        for(JsonVariant v : arr) {
+            hasp_series_t* ds_ser = hasp_dataset_get_series(ds, i++);
+            if(!ds_ser) break;
+            const char* color_str = v.is<JsonObject>() ? v["color"].as<const char*>() : v.as<const char*>();
+            if(color_str) {
+                lv_color32_t c32;
+                if(Parser::haspPayloadToColor(color_str, c32))
+                    ds_ser->color = lv_color_make(c32.ch.red, c32.ch.green, c32.ch.blue);
+            }
+        }
+        hasp_dataset_notify(ds);
+        return true;
+    }
+
+    // Standalone path: direct LVGL manipulation (no dataset linked).
     lv_chart_ext_t* ext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
     lv_chart_series_t* ser;
     while((ser = (lv_chart_series_t*)_lv_ll_get_head(&ext->series_ll)) != NULL)
         lv_chart_remove_series(obj, ser);
 
-    // Add new series with specified colors
     for(JsonVariant v : arr) {
         lv_color32_t c32;
         const char* color_str = v.is<JsonObject>() ? v["color"].as<const char*>() : v.as<const char*>();
@@ -1651,25 +1812,44 @@ static bool hasp_chart_set_data(lv_obj_t* obj, const char* payload)
     DynamicJsonDocument doc(maxsize);
     if(deserializeJson(doc, payload) != DeserializationError::Ok) return false;
 
-    uint8_t ser_num = 0;
+    uint8_t ser_num  = 0;
+    uint32_t t_start = 0;
+    uint32_t t_step  = 0;
     JsonArray arr;
     if(doc.is<JsonObject>()) {
         JsonObject jo = doc.as<JsonObject>();
-        ser_num       = jo["ser"] | (uint8_t)0;
-        arr           = jo["data"].as<JsonArray>();
-        uint32_t t_start = jo["t_start"] | (uint32_t)0;
-        uint32_t t_step  = jo["t_step"]  | (uint32_t)0;
-        if(t_start > 0 && t_step > 0) chart_set_time_info(obj, t_start, t_step);
+        ser_num = jo["ser"] | (uint8_t)0;
+        arr     = jo["data"].as<JsonArray>();
+        t_start = jo["t_start"] | (uint32_t)0;
+        t_step  = jo["t_step"]  | (uint32_t)0;
     } else {
         arr = doc.as<JsonArray>();
     }
     if(arr.isNull()) return false;
 
+    /* Dataset path: pass raw floats — scaling is applied inside hasp_dataset_replace
+     * using the per-series decimals field set in the Dataset definition. */
+    hasp_dataset_t* ds = chart_get_dataset(obj);
+    if(ds) {
+        uint16_t elem_count = 0;
+        for(JsonVariant v : arr) { (void)v; elem_count++; }
+        float* tmp = (float*)lv_mem_alloc(elem_count * sizeof(float));
+        if(tmp) {
+            uint16_t i = 0;
+            for(JsonVariant v : arr) tmp[i++] = v.as<float>();
+            hasp_dataset_replace(ds, ser_num, tmp, elem_count, t_start, t_step);
+            lv_mem_free(tmp);
+        }
+        return true;
+    }
+
+    /* Standalone path: scale using the chart's own decimals setting. */
+    uint16_t scale = chart_get_scale(obj);
+    if(t_start > 0 && t_step > 0) chart_set_time_info(obj, t_start, t_step);
     lv_chart_series_t* ser = my_chart_get_series(obj, ser_num);
     if(!ser) return false;
 
     lv_chart_clear_series(obj, ser);
-    uint16_t scale = chart_get_scale(obj);
     for(JsonVariant v : arr) {
         lv_coord_t coord = (lv_coord_t)roundf(v.as<float>() * scale);
         lv_chart_set_next(obj, ser, coord);
@@ -1702,11 +1882,23 @@ static bool hasp_chart_append_data(lv_obj_t* obj, const char* payload)
         fvalue = (float)strtod(payload, nullptr);
     }
 
+    /* Dataset path: pass raw float — scaling applied inside hasp_dataset_append
+     * using the per-series decimals field set in the Dataset definition. */
+    hasp_dataset_t* ds = chart_get_dataset(obj);
+    if(ds) {
+        lv_chart_ext_t* ext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
+        uint16_t pt_cnt = ext ? ext->point_cnt : 10;
+        hasp_dataset_append(ds, ser_num, fvalue, pt_cnt, t_new);
+        return true;
+    }
+
+    /* Standalone path: scale using the chart's own decimals setting. */
+    uint16_t scale   = chart_get_scale(obj);
+    lv_coord_t value = (lv_coord_t)roundf(fvalue * scale);
+
     lv_chart_series_t* ser = my_chart_get_series(obj, ser_num);
     if(!ser) return false;
 
-    uint16_t scale   = chart_get_scale(obj);
-    lv_coord_t value = (lv_coord_t)roundf(fvalue * scale);
     lv_chart_set_next(obj, ser, value);
     lv_chart_refresh(obj);
 
@@ -1721,9 +1913,7 @@ static bool hasp_chart_append_data(lv_obj_t* obj, const char* payload)
                 uint16_t point_cnt = ext->point_cnt;
                 uint32_t t_start   = (point_cnt > 1) ? (t_new - (uint32_t)(point_cnt - 1) * t_step) : t_new;
                 chart_set_time_info(obj, t_start, t_step);
-                if(ext->x_axis.list_of_values != NULL) {
-                    hasp_chart_set_x_scale(obj);
-                }
+                if(ext->x_axis.list_of_values != NULL) hasp_chart_set_x_scale(obj);
             }
         }
     }
@@ -3550,6 +3740,49 @@ void hasp_process_obj_attribute(lv_obj_t* obj, const char* attribute, const char
                             } else {
                                 ret = HASP_ATTR_TYPE_RANGE_ERROR;
                             }
+                        }
+                        break;
+                    }
+                    case ATTR_DATASET: {
+                        if(update) {
+                            uint8_t ds_id      = (uint8_t)strtoul(payload, nullptr, DEC);
+                            hasp_dataset_t* ds = hasp_dataset_find(ds_id);
+                            if(ds) {
+                                chart_set_dataset(obj, ds_id, ds);
+                                /* Install signal hook for auto-detach on chart destroy. */
+                                for(uint8_t i = 0; i < chart_pad_cnt; i++) {
+                                    if(chart_pads[i].obj == obj) {
+                                        chart_pads[i].original_signal = lv_obj_get_signal_cb(obj);
+                                        break;
+                                    }
+                                }
+                                lv_obj_set_signal_cb(obj, hasp_chart_dataset_signal);
+                                hasp_dataset_attach(ds, obj, hasp_chart_on_dataset_notify);
+                                LOG_VERBOSE(TAG_HASP, F("Chart %u linked to Dataset %u"),
+                                            obj->user_data.id, ds_id);
+                                /* Inherit decimals from the dataset's first series so that
+                                 * min/max (already stored in LVGL) are rescaled to match the
+                                 * scaled values that hasp_dataset_replace will produce. */
+                                if(ds->series_count > 0) {
+                                    uint8_t ds_dec     = ds->series[0].decimals;
+                                    uint16_t old_scale = chart_get_scale(obj);
+                                    chart_set_decimals(obj, ds_dec);
+                                    uint16_t new_scale = chart_get_scale(obj);
+                                    if(old_scale != new_scale) {
+                                        lv_chart_ext_t* cext = (lv_chart_ext_t*)lv_obj_get_ext_attr(obj);
+                                        if(cext) {
+                                            int32_t new_ymin = (int32_t)cext->ymin[LV_CHART_AXIS_PRIMARY_Y] * new_scale / old_scale;
+                                            int32_t new_ymax = (int32_t)cext->ymax[LV_CHART_AXIS_PRIMARY_Y] * new_scale / old_scale;
+                                            lv_chart_set_range(obj, (lv_coord_t)new_ymin, (lv_coord_t)new_ymax);
+                                        }
+                                    }
+                                    hasp_dataset_notify(ds);
+                                }
+                            } else {
+                                LOG_WARNING(TAG_HASP, F("Chart %u references unknown Dataset %u"),
+                                            obj->user_data.id, ds_id);
+                            }
+                            ret = HASP_ATTR_TYPE_METHOD_OK;
                         }
                         break;
                     }

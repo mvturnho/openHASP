@@ -6,6 +6,7 @@
 
 // #include "ArduinoLog.h"
 #include "hasplib.h"
+#include "hasp_dataset_cmd.h"
 
 #include "dev/device.h"
 #include "drv/tft/tft_driver.h"
@@ -198,6 +199,24 @@ static inline bool dispatch_parse_button_attribute(const char* topic_p, const ch
     return true;
 }
 
+// d[x].cmd=value  — Dataset command addressed by id, e.g. "d44.replace=..."
+static inline bool dispatch_parse_dataset_attribute(const char* topic_p, const char* payload, bool update)
+{
+    if(*topic_p != 'd' && *topic_p != 'D') return false;
+    topic_p++;
+
+    char* pEnd;
+    long num = strtol(topic_p, &pEnd, DEC);
+    if(pEnd == topic_p || num < 0 || num > 255) return false; // no digits or out of range
+
+    if(*pEnd != '.') return false; // obligated separator
+    const char* attr = pEnd + 1;
+    if(!attr || !*attr) return false; // no command name
+
+    hasp_process_dataset_attribute((uint8_t)num, attr, payload, update);
+    return true;
+}
+
 static void dispatch_input(const char* topic, const char* payload)
 {
 #if HASP_USE_GPIO > 0
@@ -325,6 +344,7 @@ static void dispatch_command(const char* topic, const char* payload, bool update
     /* ================================= Standard payload commands ======================================= */
 
     if(dispatch_parse_button_attribute(topic, payload, update)) return; // matched pxby.attr, first for speed
+    if(dispatch_parse_dataset_attribute(topic, payload, update)) return; // matched dx.cmd
 
     // check and execute commands from commands array
     for(int i = 0; i < nCommands; i++) {

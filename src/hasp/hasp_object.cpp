@@ -12,6 +12,7 @@
  ******************************************************************************************** */
 
 #include "hasplib.h"
+#include "hasp_dataset.h"
 
 const char** btnmatrix_default_map;            // memory pointer to lvgl default btnmatrix map
 const char* msgbox_default_map[] = {"OK", ""}; // memory pointer to hasp default msgbox map
@@ -238,6 +239,22 @@ void hasp_new_object(const JsonObject& config, uint8_t& saved_page_id)
 {
     /* Skip line detection */
     if(!config[FPSTR(FP_SKIP)].isNull() && config[FPSTR(FP_SKIP)].as<bool>()) return;
+
+    /* Datasets are page-independent — handle before any page/parent lookup */
+    if(!config[FPSTR(FP_OBJ)].isNull()) {
+        uint16_t type_sdbm = Parser::get_sdbm(config[FPSTR(FP_OBJ)].as<const char*>());
+        if(type_sdbm == HASP_OBJ_DATASET) {
+            uint8_t id     = config[FPSTR(FP_ID)].as<uint8_t>();
+            hasp_dataset_t* ds = hasp_dataset_create(id);
+            if(ds) {
+                hasp_dataset_parse_series(ds, config);
+                LOG_VERBOSE(TAG_HASP, F("Dataset %u created with %u series"), id, ds->series_count);
+            } else {
+                LOG_WARNING(TAG_HASP, F(D_OBJECT_CREATE_FAILED), id);
+            }
+            return;
+        }
+    }
 
     /* Page selection */
     uint8_t pageid = saved_page_id;

@@ -92,6 +92,9 @@ enum lv_hasp_obj_type_t {
 
     /* Custom */
     LV_HASP_ALARM = 60,
+
+    /* Data Sources */
+    LV_HASP_DATASET = 61,
 };
 
 void hasp_new_object(const JsonObject& config, uint8_t& saved_page_id);
@@ -192,5 +195,6 @@ inline bool obj_check_type(const lv_obj_t* obj, lv_hasp_obj_type_t haspobjtype)
 #define HASP_OBJ_TAB 7861
 #define HASP_OBJ_ARC 64594
 #define HASP_OBJ_ALARM 3153
+#define HASP_OBJ_DATASET 14424
 
 #endif
