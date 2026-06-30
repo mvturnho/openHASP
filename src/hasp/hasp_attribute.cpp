@@ -1688,6 +1688,14 @@ static void hasp_chart_sync_from_dataset(lv_obj_t* obj)
     }
     if(max_buf > 0 && max_buf != ext->point_cnt) lv_chart_set_point_count(obj, max_buf);
 
+    /* chart_scale is the scale factor corresponding to the chart's decimals setting
+     * (e.g. decimals=1 → scale=10).  Each dataset series may have its own decimals,
+     * so we compute a per-series correction multiplier:
+     *   correction = chart_scale / series_scale
+     * A series with fewer decimals than the chart will have correction > 1, which
+     * shifts its stored integer values up so they land in the correct LVGL range. */
+    uint16_t chart_scale = chart_get_scale(obj);
+
     if(_lv_ll_get_len(&ext->series_ll) == ds->series_count) {
         /* Fast path: series count already matches — sync data into existing LVGL series.
          * Avoids alloc/free of series structs and points buffers on every data update. */
@@ -1697,9 +1705,13 @@ static void hasp_chart_sync_from_dataset(lv_obj_t* obj)
             if(!ds_ser || !lvgl_ser) continue;
             lvgl_ser->color = ds_ser->color;
             lv_chart_clear_series(obj, lvgl_ser);
-            if(ds_ser->buf && ds_ser->count > 0)
+            if(ds_ser->buf && ds_ser->count > 0) {
+                uint16_t ser_scale = 1;
+                for(uint8_t d = 0; d < ds_ser->decimals; d++) ser_scale *= 10;
+                uint16_t correction = (ser_scale > 0 && chart_scale >= ser_scale) ? chart_scale / ser_scale : 1;
                 for(uint16_t j = 0; j < ds_ser->count; j++)
-                    lv_chart_set_next(obj, lvgl_ser, ds_ser->buf[j]);
+                    lv_chart_set_next(obj, lvgl_ser, (lv_coord_t)((int32_t)ds_ser->buf[j] * correction));
+            }
         }
     } else {
         /* Full rebuild: series count changed (first link, or layout change). */
@@ -1711,9 +1723,13 @@ static void hasp_chart_sync_from_dataset(lv_obj_t* obj)
             if(!ds_ser) continue;
             lv_chart_series_t* lvgl_ser = lv_chart_add_series(obj, ds_ser->color);
             if(!lvgl_ser) continue;
-            if(ds_ser->buf && ds_ser->count > 0)
+            if(ds_ser->buf && ds_ser->count > 0) {
+                uint16_t ser_scale = 1;
+                for(uint8_t d = 0; d < ds_ser->decimals; d++) ser_scale *= 10;
+                uint16_t correction = (ser_scale > 0 && chart_scale >= ser_scale) ? chart_scale / ser_scale : 1;
                 for(uint16_t j = 0; j < ds_ser->count; j++)
-                    lv_chart_set_next(obj, lvgl_ser, ds_ser->buf[j]);
+                    lv_chart_set_next(obj, lvgl_ser, (lv_coord_t)((int32_t)ds_ser->buf[j] * correction));
+            }
         }
     }
 
@@ -3760,11 +3776,15 @@ void hasp_process_obj_attribute(lv_obj_t* obj, const char* attribute, const char
                                 hasp_dataset_attach(ds, obj, hasp_chart_on_dataset_notify);
                                 LOG_VERBOSE(TAG_HASP, F("Chart %u linked to Dataset %u"),
                                             obj->user_data.id, ds_id);
-                                /* Inherit decimals from the dataset's first series so that
+                                /* Inherit the maximum decimals across all series so that
                                  * min/max (already stored in LVGL) are rescaled to match the
-                                 * scaled values that hasp_dataset_replace will produce. */
+                                 * highest-precision scaled values hasp_dataset_replace will produce.
+                                 * Using the max ensures every series fits in the same LVGL range
+                                 * after the per-series scale correction in hasp_chart_sync_from_dataset. */
                                 if(ds->series_count > 0) {
-                                    uint8_t ds_dec     = ds->series[0].decimals;
+                                    uint8_t ds_dec = 0;
+                                    for(uint8_t si = 0; si < ds->series_count; si++)
+                                        if(ds->series[si].decimals > ds_dec) ds_dec = ds->series[si].decimals;
                                     uint16_t old_scale = chart_get_scale(obj);
                                     chart_set_decimals(obj, ds_dec);
                                     uint16_t new_scale = chart_get_scale(obj);
